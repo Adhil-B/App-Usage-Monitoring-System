@@ -10,6 +10,8 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import calendar
+from datetime import datetime, timedelta
 
 if sys.platform == "win32":
     import ctypes
@@ -119,17 +121,19 @@ class AppUI:
         self.website_listbox = ctk.CTkScrollableFrame(mid_col, width=260, height=320, fg_color="#181a20", corner_radius=8)
         self.website_listbox.pack(fill="both", expand=True, padx=10, pady=(6, 10))
 
-        # Right column: Custom Pie Charts
+        # Right column: Modern Stacked Bar Chart
         right_col = ctk.CTkFrame(main, fg_color="#1e2127", corner_radius=14)
         right_col.grid(row=0, column=2, sticky="nsew", padx=(8, 0), pady=0)
-        stats_header = ctk.CTkLabel(right_col, text="Usage Overview", font=("Segoe UI", 14, "bold"), text_color="#fff")
+        stats_header = ctk.CTkLabel(right_col, text="Usage Stats", font=("Segoe UI", 14, "bold"), text_color="#fff")
         stats_header.pack(anchor="w", padx=14, pady=(10, 0))
-        self.pie_canvas_app = ctk.CTkCanvas(right_col, width=140, height=140, bg="#181a20", highlightthickness=0)
-        self.pie_canvas_app.pack(padx=18, pady=(16, 8))
-        self.pie_canvas_web = ctk.CTkCanvas(right_col, width=140, height=140, bg="#181a20", highlightthickness=0)
-        self.pie_canvas_web.pack(padx=18, pady=(8, 16))
-        self.pie_legend = ctk.CTkFrame(right_col, fg_color="#181a20")
-        self.pie_legend.pack(fill="x", padx=18, pady=(0, 8))
+        self.usage_total_label = ctk.CTkLabel(right_col, text="", font=("Segoe UI", 24, "bold"), text_color="#fff")
+        self.usage_total_label.pack(anchor="center", pady=(8, 0))
+        self.usage_range_label = ctk.CTkLabel(right_col, text="", font=("Segoe UI", 11), text_color="#aaa")
+        self.usage_range_label.pack(anchor="center", pady=(0, 8))
+        self.bar_canvas = ctk.CTkCanvas(right_col, width=220, height=140, bg="#181a20", highlightthickness=0)
+        self.bar_canvas.pack(padx=18, pady=(0, 8))
+        self.bar_legend = ctk.CTkFrame(right_col, fg_color="#181a20")
+        self.bar_legend.pack(fill="x", padx=18, pady=(0, 8))
 
         # Button bar (bottom, right-aligned)
         btn_frame = ctk.CTkFrame(self.root, fg_color="#23272e")
@@ -266,67 +270,67 @@ class AppUI:
                 del self.website_rows[key]
 
     def update_stats_charts(self, in_place=False):
-        # Modern donut-style pie for app usage
-        usage = [(app, minutes) for app, minutes in get_usage_today() if app not in IGNORE_APPS]
-        total = sum(minutes for _, minutes in usage)
-        top = sorted(usage, key=lambda x: -x[1])[:3]
-        other = total - sum(x[1] for x in top)
-        colors = ["#60a5fa", "#a78bfa", "#fbbf24", "#9ca3af"]  # Pastel blue, purple, yellow, gray
-        self.pie_canvas_app.delete("all")
-        # Draw shadow
-        self.pie_canvas_app.create_oval(18, 18, 122, 122, fill="#111318", outline="", width=0)
-        start = 0
-        legend_items = []
-        for i, (app, minutes) in enumerate(top):
-            extent = 360 * minutes / total if total > 0 else 0
-            self.pie_canvas_app.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[i], width=22)
-            start += extent
-            legend_items.append((colors[i], self.friendly_map.get(app, app)))
-        if other > 0:
-            extent = 360 * other / total if total > 0 else 0
-            self.pie_canvas_app.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[3], width=22)
-            legend_items.append((colors[3], "Other"))
-        # Center text and subtitle
-        self.pie_canvas_app.create_text(70, 62, text=f"{int(total)}", fill="#fff", font=("Segoe UI", 18, "bold"), justify="center")
-        self.pie_canvas_app.create_text(70, 86, text="min", fill="#a3a3a3", font=("Segoe UI", 11, "bold"), justify="center")
-
-        # Modern donut-style pie for website usage
-        web_usage = get_website_usage_today()
-        web_total = sum(minutes for _, minutes in web_usage)
-        web_top = sorted(web_usage, key=lambda x: -x[1])[:3]
-        web_other = web_total - sum(x[1] for x in web_top)
-        self.pie_canvas_web.delete("all")
-        self.pie_canvas_web.create_oval(18, 18, 122, 122, fill="#111318", outline="", width=0)
-        start = 0
-        web_legend_items = []
-        for i, (site, minutes) in enumerate(web_top):
-            extent = 360 * minutes / web_total if web_total > 0 else 0
-            self.pie_canvas_web.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[i], width=22)
-            start += extent
-            web_legend_items.append((colors[i], site.capitalize()))
-        if web_other > 0:
-            extent = 360 * web_other / web_total if web_total > 0 else 0
-            self.pie_canvas_web.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[3], width=22)
-            web_legend_items.append((colors[3], "Other"))
-        self.pie_canvas_web.create_text(70, 62, text=f"{int(web_total)}", fill="#fff", font=("Segoe UI", 18, "bold"), justify="center")
-        self.pie_canvas_web.create_text(70, 86, text="min", fill="#a3a3a3", font=("Segoe UI", 11, "bold"), justify="center")
-
-        # Update legend
-        for widget in self.pie_legend.winfo_children():
+        # Modern stacked bar chart for weekly usage
+        today = datetime.now().date()
+        week_start = today - timedelta(days=today.weekday())
+        week_days = [(week_start + timedelta(days=i)) for i in range(7)]
+        day_labels = [calendar.day_abbr[d.weekday()][0] for d in week_days]
+        # Prepare data: {day: {category: minutes}}
+        day_data = {d: {"Distracting": 0, "Productive": 0, "Others": 0} for d in week_days}
+        # Example: classify apps/sites (customize as needed)
+        DISTRACTING = set(["youtube", "instagram", "facebook", "twitter", "reddit", "tiktok", "netflix", "discord", "pinterest", "tumblr", "twitch", "roblox", "prime video", "quora", "9gag", "bilibili", "vk", "weibo", "imgur", "kick", "onlyfans"])
+        PRODUCTIVE = set(["notion", "vscode", "pycharm", "word", "excel", "onenote", "outlook", "teams", "slack", "zoom", "google docs", "google sheets", "github desktop"])
+        # App usage
+        for app, minutes in get_usage_today():
+            app_lower = app.lower()
+            # For demo, treat all as today
+            day = today
+            if any(site in app_lower for site in DISTRACTING):
+                day_data[day]["Distracting"] += minutes
+            elif any(site in app_lower for site in PRODUCTIVE):
+                day_data[day]["Productive"] += minutes
+            else:
+                day_data[day]["Others"] += minutes
+        # Website usage
+        for site, minutes in get_website_usage_today():
+            site_lower = site.lower()
+            day = today
+            if any(site in site_lower for site in DISTRACTING):
+                day_data[day]["Distracting"] += minutes
+            elif any(site in site_lower for site in PRODUCTIVE):
+                day_data[day]["Productive"] += minutes
+            else:
+                day_data[day]["Others"] += minutes
+        # Draw chart
+        self.bar_canvas.delete("all")
+        bar_width = 18
+        gap = 12
+        x0 = 18
+        max_minutes = max(sum(day_data[d][cat] for cat in day_data[d]) for d in week_days) or 1
+        colors = {"Distracting": "#f59e42", "Productive": "#4ade80", "Others": "#9ca3af"}
+        for i, d in enumerate(week_days):
+            y = 130
+            for cat in ["Others", "Productive", "Distracting"]:
+                h = int(110 * day_data[d][cat] / max_minutes) if max_minutes > 0 else 0
+                if h > 0:
+                    self.bar_canvas.create_rectangle(x0 + i * (bar_width + gap), y - h, x0 + i * (bar_width + gap) + bar_width, y, fill=colors[cat], outline="", width=0)
+                    y -= h
+            # Day label
+            self.bar_canvas.create_text(x0 + i * (bar_width + gap) + bar_width // 2, 135, text=day_labels[i], fill="#aaa", font=("Segoe UI", 11, "bold"))
+        # Total usage
+        total_minutes = sum(sum(day_data[d][cat] for cat in day_data[d]) for d in week_days)
+        h = total_minutes // 60
+        m = int(total_minutes % 60)
+        self.usage_total_label.configure(text=f"{h}h {m}m")
+        self.usage_range_label.configure(text=f"{week_days[0].strftime('%d %b')} - {week_days[-1].strftime('%d %b')}")
+        # Legend
+        for widget in self.bar_legend.winfo_children():
             widget.destroy()
-        for color, label in legend_items:
-            dot = ctk.CTkLabel(self.pie_legend, text="●", font=("Segoe UI", 14, "bold"), text_color=color)
-            dot.pack(side="left", padx=(0, 3))
-            txt = ctk.CTkLabel(self.pie_legend, text=label, font=("Segoe UI", 10), text_color="#fff")
-            txt.pack(side="left", padx=(0, 10))
-        if legend_items and web_legend_items:
-            sep = ctk.CTkLabel(self.pie_legend, text="|", font=("Segoe UI", 13), text_color="#aaa")
-            sep.pack(side="left", padx=(0, 8))
-        for color, label in web_legend_items:
-            dot = ctk.CTkLabel(self.pie_legend, text="●", font=("Segoe UI", 14, "bold"), text_color=color)
-            dot.pack(side="left", padx=(0, 3))
-            txt = ctk.CTkLabel(self.pie_legend, text=label, font=("Segoe UI", 10), text_color="#fff")
-            txt.pack(side="left", padx=(0, 10))
+        for cat, color in colors.items():
+            dot = ctk.CTkLabel(self.bar_legend, text="●", font=("Segoe UI", 13, "bold"), text_color=color)
+            dot.pack(side="left", padx=(0, 4))
+            txt = ctk.CTkLabel(self.bar_legend, text=cat, font=("Segoe UI", 11), text_color="#fff")
+            txt.pack(side="left", padx=(0, 12))
 
     def update_status(self):
         if self.tracker.is_running():
