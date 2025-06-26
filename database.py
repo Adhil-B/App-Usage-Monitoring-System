@@ -26,6 +26,16 @@ def init_db():
             max_minutes INTEGER
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS website_usage_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site TEXT,
+            browser TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            duration REAL
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -94,5 +104,42 @@ def get_latest_window_titles():
         )
     ''')
     results = dict(c.fetchall())
+    conn.close()
+    return results
+
+def log_website_usage(site, browser, start_time, end_time, duration):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO website_usage_logs (site, browser, start_time, end_time, duration)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (site, browser, start_time, end_time, duration))
+    conn.commit()
+    conn.close()
+
+def get_website_usage_today():
+    conn = get_connection()
+    c = conn.cursor()
+    today = datetime.now().strftime('%Y-%m-%d')
+    c.execute('''
+        SELECT site, SUM(duration) FROM website_usage_logs
+        WHERE start_time LIKE ?
+        GROUP BY site
+        ORDER BY SUM(duration) DESC
+    ''', (today+'%',))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_top_websites(limit=10):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT site, SUM(duration) as total FROM website_usage_logs
+        GROUP BY site
+        ORDER BY total DESC
+        LIMIT ?
+    ''', (limit,))
+    results = c.fetchall()
     conn.close()
     return results 

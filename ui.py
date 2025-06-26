@@ -2,7 +2,7 @@ import customtkinter as ctk
 from tkinter import messagebox, simpledialog
 from tracker import Tracker
 from notifier import show_alert
-from database import init_db, get_usage_today, set_limit, get_top_used_apps, get_latest_window_titles
+from database import init_db, get_usage_today, set_limit, get_top_used_apps, get_latest_window_titles, get_website_usage_today
 from PIL import Image, ImageTk
 import os
 import sys
@@ -47,21 +47,29 @@ def get_friendly_app_name(exe_path, fallback, window_title=None):
         try:
             import win32api
             info = win32api.GetFileVersionInfo(exe_path, '\\')
-            # Try FileDescription first
+            # Prefer FileDescription, then ProductName
             if 'StringFileInfo' in info:
                 for k, v in info['StringFileInfo'].items():
                     if k.lower() == 'filedescription' and v:
                         return v
+                for k, v in info['StringFileInfo'].items():
                     if k.lower() == 'productname' and v:
                         return v
             if 'FileDescription' in info and info['FileDescription']:
                 return info['FileDescription']
         except Exception:
             pass
-    # Fallback to window title if available and not generic
+    # If window title contains ' - ', use the part after the last ' - '
     if window_title and window_title.strip() and window_title.strip().lower() not in ["", "program manager", "start menu"]:
-        return window_title.strip()
+        title = window_title.strip()
+        if ' - ' in title:
+            return title.split(' - ')[-1].strip()
+        return title
     return fallback
+
+IGNORE_APPS = {
+    'explorer.exe', 'Search', 'System', 'Start Menu', 'program manager', 'ShellExperienceHost.exe', 'StartMenuExperienceHost.exe', 'RuntimeBroker.exe', 'SearchUI.exe', 'backgroundTaskHost.exe', 'ctfmon.exe', 'dwm.exe', 'sihost.exe', 'taskhostw.exe', 'TextInputHost.exe', 'LockApp.exe', 'ApplicationFrameHost.exe', 'WindowsInternal.ComposableShell.Experiences.TextInput.InputApp.exe', 'WindowsShellExperienceHost.exe', 'SearchApp.exe', 'StartMenuExperienceHost', 'Widgets.exe', 'WidgetService.exe', 'YourPhone.exe', 'SystemSettings.exe', 'msedgewebview2.exe', 'SecurityHealthSystray.exe', 'SecurityHealthService.exe', 'smartscreen.exe', 'SearchHost.exe', 'SearchFilterHost.exe', 'SearchProtocolHost.exe', 'SearchIndexer.exe', 'Idle', 'Idle.exe', 'DesktopWindowXamlSource', 'backgroundTaskHost', 'SearchApp', 'Widgets', 'WidgetService', 'YourPhone', 'SystemSettings', 'msedgewebview2', 'SecurityHealthSystray', 'SecurityHealthService', 'smartscreen', 'SearchHost', 'SearchFilterHost', 'SearchProtocolHost', 'SearchIndexer', 'Idle', 'Idle.exe', 'DesktopWindowXamlSource',
+}
 
 class AppUI:
     def __init__(self, root):
@@ -73,42 +81,65 @@ class AppUI:
         self.icon_cache = {}  # exe_path -> PhotoImage
         self.create_widgets()
         self.update_usage_table()
+        self.update_website_usage_table()
         self.update_status()
         self.update_stats_charts()
         self.auto_refresh()
 
     def create_widgets(self):
-        self.tabview = ctk.CTkTabview(self.root, width=700, height=500)
-        self.tabview.pack(fill="both", expand=True, padx=20, pady=20)
-        self.dashboard_tab = self.tabview.add("Dashboard")
-        self.stats_tab = self.tabview.add("Statistics")
+        # Header
+        header = ctk.CTkFrame(self.root, fg_color="#23272e", corner_radius=16)
+        header.pack(fill="x", padx=24, pady=(18, 8))
+        app_title = ctk.CTkLabel(header, text="App Usage Monitor", font=("Segoe UI", 22, "bold"), text_color="#fff")
+        app_title.pack(side="left", padx=16, pady=12)
+        self.status_label = ctk.CTkLabel(header, text="Status: Stopped", font=("Segoe UI", 14), text_color="#aaa")
+        self.status_label.pack(side="right", padx=16)
 
-        # Dashboard Tab
-        self.status_label = ctk.CTkLabel(self.dashboard_tab, text="Status: Stopped", font=("Segoe UI", 16))
-        self.status_label.pack(pady=10)
+        # Main horizontal layout
+        main = ctk.CTkFrame(self.root, fg_color="#23272e", corner_radius=16)
+        main.pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        main.rowconfigure(0, weight=1)
+        main.columnconfigure(0, weight=1)
+        main.columnconfigure(1, weight=1)
+        main.columnconfigure(2, weight=1)
 
-        btn_frame = ctk.CTkFrame(self.dashboard_tab)
-        btn_frame.pack(pady=10)
-        self.start_btn = ctk.CTkButton(btn_frame, text="Start Tracking", command=self.start_tracking, width=140)
-        self.start_btn.pack(side="left", padx=10)
-        self.stop_btn = ctk.CTkButton(btn_frame, text="Stop Tracking", command=self.stop_tracking, state="disabled", width=140)
-        self.stop_btn.pack(side="left", padx=10)
-        self.limit_btn = ctk.CTkButton(btn_frame, text="Set/Edit App Limit", command=self.set_limit_dialog, width=180)
-        self.limit_btn.pack(side="left", padx=10)
+        # Left column: App Usage
+        left_col = ctk.CTkFrame(main, fg_color="#1e2127", corner_radius=14)
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
+        app_header = ctk.CTkLabel(left_col, text="App Usage (Today)", font=("Segoe UI", 14, "bold"), text_color="#fff")
+        app_header.pack(anchor="w", padx=14, pady=(10, 0))
+        self.app_listbox = ctk.CTkScrollableFrame(left_col, width=260, height=320, fg_color="#181a20", corner_radius=8)
+        self.app_listbox.pack(fill="both", expand=True, padx=10, pady=(6, 10))
 
-        # App Usage Table (with icon placeholder)
-        self.usage_table = ctk.CTkFrame(self.dashboard_tab)
-        self.usage_table.pack(fill="both", expand=True, pady=10)
-        self.app_listbox = ctk.CTkScrollableFrame(self.usage_table, width=600, height=250)
-        self.app_listbox.pack(fill="both", expand=True)
+        # Middle column: Website Usage
+        mid_col = ctk.CTkFrame(main, fg_color="#1e2127", corner_radius=14)
+        mid_col.grid(row=0, column=1, sticky="nsew", padx=8, pady=0)
+        web_header = ctk.CTkLabel(mid_col, text="Website Usage (Today)", font=("Segoe UI", 14, "bold"), text_color="#fff")
+        web_header.pack(anchor="w", padx=14, pady=(10, 0))
+        self.website_listbox = ctk.CTkScrollableFrame(mid_col, width=260, height=320, fg_color="#181a20", corner_radius=8)
+        self.website_listbox.pack(fill="both", expand=True, padx=10, pady=(6, 10))
 
-        # Statistics Tab (matplotlib charts)
-        self.stats_label = ctk.CTkLabel(self.stats_tab, text="Usage Statistics", font=("Segoe UI", 16))
-        self.stats_label.pack(pady=10)
-        self.stats_canvas = ctk.CTkFrame(self.stats_tab, width=600, height=350)
-        self.stats_canvas.pack(pady=10)
-        self.pie_canvas = None
-        self.bar_canvas = None
+        # Right column: Custom Pie Charts
+        right_col = ctk.CTkFrame(main, fg_color="#1e2127", corner_radius=14)
+        right_col.grid(row=0, column=2, sticky="nsew", padx=(8, 0), pady=0)
+        stats_header = ctk.CTkLabel(right_col, text="Usage Overview", font=("Segoe UI", 14, "bold"), text_color="#fff")
+        stats_header.pack(anchor="w", padx=14, pady=(10, 0))
+        self.pie_canvas_app = ctk.CTkCanvas(right_col, width=140, height=140, bg="#181a20", highlightthickness=0)
+        self.pie_canvas_app.pack(padx=18, pady=(16, 8))
+        self.pie_canvas_web = ctk.CTkCanvas(right_col, width=140, height=140, bg="#181a20", highlightthickness=0)
+        self.pie_canvas_web.pack(padx=18, pady=(8, 16))
+        self.pie_legend = ctk.CTkFrame(right_col, fg_color="#181a20")
+        self.pie_legend.pack(fill="x", padx=18, pady=(0, 8))
+
+        # Button bar (bottom, right-aligned)
+        btn_frame = ctk.CTkFrame(self.root, fg_color="#23272e")
+        btn_frame.pack(fill="x", padx=24, pady=(0, 12))
+        self.start_btn = ctk.CTkButton(btn_frame, text="Start Tracking", command=self.start_tracking, width=120, height=32, font=("Segoe UI", 12, "bold"), fg_color="#2563eb", hover_color="#1d4ed8", text_color="#fff")
+        self.start_btn.pack(side="right", padx=8)
+        self.stop_btn = ctk.CTkButton(btn_frame, text="Stop Tracking", command=self.stop_tracking, state="disabled", width=120, height=32, font=("Segoe UI", 12, "bold"), fg_color="#6b7280", hover_color="#374151", text_color="#fff")
+        self.stop_btn.pack(side="right", padx=8)
+        self.limit_btn = ctk.CTkButton(btn_frame, text="Set/Edit App Limit", command=self.set_limit_dialog, width=150, height=32, font=("Segoe UI", 12, "bold"), fg_color="#a21caf", hover_color="#7c1fa2", text_color="#fff")
+        self.limit_btn.pack(side="right", padx=8)
 
     def start_tracking(self):
         self.tracker.start()
@@ -163,38 +194,39 @@ class AppUI:
         new_keys = set()
         if not hasattr(self, 'usage_rows'):
             self.usage_rows = {}
-        # Build new/updated rows
-        for app, minutes in usage:
+        for idx, (app, minutes) in enumerate(usage):
+            if app in IGNORE_APPS:
+                continue
             exe_path = exe_map.get(app)
             window_title = latest_titles.get(app)
             friendly_name = get_friendly_app_name(exe_path, app, window_title)
+            if friendly_name in IGNORE_APPS:
+                continue
             friendly_map[app] = friendly_name
             new_keys.add(friendly_name)
             icon = self.get_icon(exe_path, friendly_name)
+            bg = "#23272e" if idx % 2 == 0 else "#181a20"
             if friendly_name not in self.usage_rows:
-                row = ctk.CTkFrame(self.app_listbox)
-                row.pack(fill="x", pady=2, padx=5)
+                row = ctk.CTkFrame(self.app_listbox, fg_color=bg, corner_radius=6, height=36)
+                row.pack(fill="x", pady=1, padx=2)
                 if icon:
-                    icon_label = ctk.CTkLabel(row, image=icon, text="")
+                    icon_label = ctk.CTkLabel(row, image=icon, text="", width=28)
                     icon_label.image = icon
-                    icon_label.pack(side="left", padx=2)
+                    icon_label.pack(side="left", padx=6)
                 else:
-                    icon_label = ctk.CTkLabel(row, text="🖥️", width=30)
-                    icon_label.pack(side="left", padx=2)
-                name_label = ctk.CTkLabel(row, text=friendly_name, font=("Segoe UI", 13))
-                name_label.pack(side="left", padx=10)
-                mins_label = ctk.CTkLabel(row, text=f"{minutes:.1f} min", font=("Segoe UI", 13))
-                mins_label.pack(side="right", padx=10)
+                    icon_label = ctk.CTkLabel(row, text="🖥️", width=28)
+                    icon_label.pack(side="left", padx=6)
+                name_label = ctk.CTkLabel(row, text=friendly_name, font=("Segoe UI", 12, "bold"), text_color="#fff")
+                name_label.pack(side="left", padx=8)
+                mins_label = ctk.CTkLabel(row, text=f"{minutes:.1f} min", font=("Segoe UI", 11), text_color="#aaa")
+                mins_label.pack(side="right", padx=8)
                 self.usage_rows[friendly_name] = (row, name_label, mins_label, icon_label)
             else:
                 row, name_label, mins_label, icon_label = self.usage_rows[friendly_name]
-                # Only update text if changed
                 if name_label.cget("text") != friendly_name:
                     name_label.configure(text=friendly_name)
                 if mins_label.cget("text") != f"{minutes:.1f} min":
                     mins_label.configure(text=f"{minutes:.1f} min")
-                # Optionally update icon if exe_path changes (not implemented here)
-        # Remove rows for apps no longer present
         for key in list(self.usage_rows.keys()):
             if key not in new_keys:
                 row, _, _, _ = self.usage_rows[key]
@@ -202,57 +234,99 @@ class AppUI:
                 del self.usage_rows[key]
         self.friendly_map = friendly_map
 
+    def update_website_usage_table(self):
+        usage = get_website_usage_today()
+        new_keys = set()
+        if not hasattr(self, 'website_rows'):
+            self.website_rows = {}
+        for idx, (site, minutes) in enumerate(usage):
+            site_display = site.capitalize()
+            new_keys.add(site_display)
+            bg = "#23272e" if idx % 2 == 0 else "#181a20"
+            if site_display not in self.website_rows:
+                row = ctk.CTkFrame(self.website_listbox, fg_color=bg, corner_radius=6, height=36)
+                row.pack(fill="x", pady=1, padx=2)
+                icon_label = ctk.CTkLabel(row, text="🌐", width=28)
+                icon_label.pack(side="left", padx=6)
+                name_label = ctk.CTkLabel(row, text=site_display, font=("Segoe UI", 12, "bold"), text_color="#fff")
+                name_label.pack(side="left", padx=8)
+                mins_label = ctk.CTkLabel(row, text=f"{minutes:.1f} min", font=("Segoe UI", 11), text_color="#aaa")
+                mins_label.pack(side="right", padx=8)
+                self.website_rows[site_display] = (row, name_label, mins_label, icon_label)
+            else:
+                row, name_label, mins_label, icon_label = self.website_rows[site_display]
+                if name_label.cget("text") != site_display:
+                    name_label.configure(text=site_display)
+                if mins_label.cget("text") != f"{minutes:.1f} min":
+                    mins_label.configure(text=f"{minutes:.1f} min")
+        for key in list(self.website_rows.keys()):
+            if key not in new_keys:
+                row, _, _, _ = self.website_rows[key]
+                row.destroy()
+                del self.website_rows[key]
+
     def update_stats_charts(self, in_place=False):
-        if not in_place:
-            for widget in self.stats_canvas.winfo_children():
-                widget.destroy()
-        usage = get_usage_today()
-        if not usage:
-            if not in_place:
-                label = ctk.CTkLabel(self.stats_canvas, text="No usage data to display.")
-                label.pack()
-            return
-        try:
-            dark_bg = self.root._apply_appearance_mode(ctk.ThemeManager.theme['CTkFrame']['fg_color'])
-            if isinstance(dark_bg, (tuple, list)):
-                dark_bg = dark_bg[0]
-            if not (isinstance(dark_bg, str) and dark_bg.startswith('#')):
-                dark_bg = '#242424'
-        except Exception:
-            dark_bg = '#242424'
-        # Use friendly names for chart labels
-        exe_map = self.tracker.get_app_exe_map()
-        friendly_map = getattr(self, 'friendly_map', {})
-        labels = [friendly_map.get(app, app) for app, _ in usage]
-        sizes = [minutes for _, minutes in usage]
-        fig1 = Figure(figsize=(3.5, 3), dpi=100, facecolor=dark_bg)
-        ax1 = fig1.add_subplot(111, facecolor=dark_bg)
-        wedges, texts, autotexts = ax1.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=140, textprops={'color':'white'})
-        ax1.set_title("Today's App Usage Distribution", color='white')
-        fig1.patch.set_alpha(1.0)
-        if in_place and hasattr(self, 'pie_canvas') and self.pie_canvas:
-            self.pie_canvas.get_tk_widget().destroy()
-        self.pie_canvas = FigureCanvasTkAgg(fig1, master=self.stats_canvas)
-        self.pie_canvas.draw()
-        self.pie_canvas.get_tk_widget().pack(side="left", padx=10)
-        # Bar chart for top apps
-        top_apps = get_top_used_apps(10)
-        bar_labels = [get_friendly_app_name(exe_map.get(app), app) for app, _ in top_apps]
-        bar_values = [minutes for _, minutes in top_apps]
-        fig2 = Figure(figsize=(3.5, 3), dpi=100, facecolor=dark_bg)
-        ax2 = fig2.add_subplot(111, facecolor=dark_bg)
-        bars = ax2.barh(bar_labels, bar_values, color="#1f77b4")
-        ax2.set_xlabel("Minutes Used", color='white')
-        ax2.set_title("Top Used Apps (All Time)", color='white')
-        ax2.tick_params(axis='x', colors='white')
-        ax2.tick_params(axis='y', colors='white')
-        fig2.patch.set_alpha(1.0)
-        ax2.set_facecolor(dark_bg)
-        if in_place and hasattr(self, 'bar_canvas') and self.bar_canvas:
-            self.bar_canvas.get_tk_widget().destroy()
-        self.bar_canvas = FigureCanvasTkAgg(fig2, master=self.stats_canvas)
-        self.bar_canvas.draw()
-        self.bar_canvas.get_tk_widget().pack(side="right", padx=10)
+        # Modern donut-style pie for app usage
+        usage = [(app, minutes) for app, minutes in get_usage_today() if app not in IGNORE_APPS]
+        total = sum(minutes for _, minutes in usage)
+        top = sorted(usage, key=lambda x: -x[1])[:3]
+        other = total - sum(x[1] for x in top)
+        colors = ["#60a5fa", "#a78bfa", "#fbbf24", "#9ca3af"]  # Pastel blue, purple, yellow, gray
+        self.pie_canvas_app.delete("all")
+        # Draw shadow
+        self.pie_canvas_app.create_oval(18, 18, 122, 122, fill="#111318", outline="", width=0)
+        start = 0
+        legend_items = []
+        for i, (app, minutes) in enumerate(top):
+            extent = 360 * minutes / total if total > 0 else 0
+            self.pie_canvas_app.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[i], width=22)
+            start += extent
+            legend_items.append((colors[i], self.friendly_map.get(app, app)))
+        if other > 0:
+            extent = 360 * other / total if total > 0 else 0
+            self.pie_canvas_app.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[3], width=22)
+            legend_items.append((colors[3], "Other"))
+        # Center text and subtitle
+        self.pie_canvas_app.create_text(70, 62, text=f"{int(total)}", fill="#fff", font=("Segoe UI", 18, "bold"), justify="center")
+        self.pie_canvas_app.create_text(70, 86, text="min", fill="#a3a3a3", font=("Segoe UI", 11, "bold"), justify="center")
+
+        # Modern donut-style pie for website usage
+        web_usage = get_website_usage_today()
+        web_total = sum(minutes for _, minutes in web_usage)
+        web_top = sorted(web_usage, key=lambda x: -x[1])[:3]
+        web_other = web_total - sum(x[1] for x in web_top)
+        self.pie_canvas_web.delete("all")
+        self.pie_canvas_web.create_oval(18, 18, 122, 122, fill="#111318", outline="", width=0)
+        start = 0
+        web_legend_items = []
+        for i, (site, minutes) in enumerate(web_top):
+            extent = 360 * minutes / web_total if web_total > 0 else 0
+            self.pie_canvas_web.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[i], width=22)
+            start += extent
+            web_legend_items.append((colors[i], site.capitalize()))
+        if web_other > 0:
+            extent = 360 * web_other / web_total if web_total > 0 else 0
+            self.pie_canvas_web.create_arc(18, 18, 122, 122, start=start, extent=extent, style="arc", outline=colors[3], width=22)
+            web_legend_items.append((colors[3], "Other"))
+        self.pie_canvas_web.create_text(70, 62, text=f"{int(web_total)}", fill="#fff", font=("Segoe UI", 18, "bold"), justify="center")
+        self.pie_canvas_web.create_text(70, 86, text="min", fill="#a3a3a3", font=("Segoe UI", 11, "bold"), justify="center")
+
+        # Update legend
+        for widget in self.pie_legend.winfo_children():
+            widget.destroy()
+        for color, label in legend_items:
+            dot = ctk.CTkLabel(self.pie_legend, text="●", font=("Segoe UI", 14, "bold"), text_color=color)
+            dot.pack(side="left", padx=(0, 3))
+            txt = ctk.CTkLabel(self.pie_legend, text=label, font=("Segoe UI", 10), text_color="#fff")
+            txt.pack(side="left", padx=(0, 10))
+        if legend_items and web_legend_items:
+            sep = ctk.CTkLabel(self.pie_legend, text="|", font=("Segoe UI", 13), text_color="#aaa")
+            sep.pack(side="left", padx=(0, 8))
+        for color, label in web_legend_items:
+            dot = ctk.CTkLabel(self.pie_legend, text="●", font=("Segoe UI", 14, "bold"), text_color=color)
+            dot.pack(side="left", padx=(0, 3))
+            txt = ctk.CTkLabel(self.pie_legend, text=label, font=("Segoe UI", 10), text_color="#fff")
+            txt.pack(side="left", padx=(0, 10))
 
     def update_status(self):
         if self.tracker.is_running():
@@ -265,6 +339,7 @@ class AppUI:
         if self.tracker.is_running():
             self.update_usage_table(in_place=True)
             self.update_stats_charts(in_place=True)
+            self.update_website_usage_table()
         self.root.after(2000, self.auto_refresh)  # Always reschedule
 
 def main():
