@@ -1,0 +1,6 @@
+pywin32
+psutil
+win10toast
+customtkinter
+pillow
+matplotlib 
