@@ -7,7 +7,7 @@ from datetime import datetime
 from database import insert_usage_log, get_limit, log_website_usage
 
 DISTRACTING_SITES = [
-    'youtube.com', 'youtube', 'instagram.com', 'instagram', 'facebook.com', 'facebook', 'twitter.com', 'twitter',
+    'youtube.com', 'youtube', 'instagram', 'facebook.com', 'facebook', 'twitter.com', 'twitter',
     'reddit.com', 'reddit', 'tiktok.com', 'tiktok', 'netflix.com', 'netflix', 'discord.com', 'discord',
     'pinterest.com', 'pinterest', 'tumblr.com', 'tumblr', 'twitch.tv', 'twitch', 'roblox.com', 'roblox',
     'primevideo.com', 'prime video', 'linkedin.com', 'linkedin', 'quora.com', 'quora', '9gag.com', '9gag',
