@@ -142,4 +142,112 @@ def get_top_websites(limit=10):
     ''', (limit,))
     results = c.fetchall()
     conn.close()
+    return results
+
+def get_usage_range(start_date, end_date):
+    """Get app usage between two dates (inclusive), grouped by app and day."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT app_name, start_time, SUM(duration) FROM usage_logs
+        WHERE date(start_time) BETWEEN ? AND ?
+        GROUP BY app_name, date(start_time)
+        ORDER BY date(start_time), SUM(duration) DESC
+    ''', (start_date, end_date))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_usage_by_hour(date_str):
+    """Get app usage for a specific date, grouped by hour."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT strftime('%H', start_time) as hour, app_name, SUM(duration) FROM usage_logs
+        WHERE date(start_time) = ?
+        GROUP BY hour, app_name
+        ORDER BY hour, SUM(duration) DESC
+    ''', (date_str,))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_usage_by_day(start_date, end_date):
+    """Get total app usage per day in a date range."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT date(start_time) as day, app_name, SUM(duration) FROM usage_logs
+        WHERE date(start_time) BETWEEN ? AND ?
+        GROUP BY day, app_name
+        ORDER BY day, SUM(duration) DESC
+    ''', (start_date, end_date))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_usage_by_week(start_date, end_date):
+    """Get total app usage per week in a date range."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT strftime('%Y-%W', start_time) as week, app_name, SUM(duration) FROM usage_logs
+        WHERE date(start_time) BETWEEN ? AND ?
+        GROUP BY week, app_name
+        ORDER BY week, SUM(duration) DESC
+    ''', (start_date, end_date))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_website_usage_range(start_date, end_date):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT site, start_time, SUM(duration) FROM website_usage_logs
+        WHERE date(start_time) BETWEEN ? AND ?
+        GROUP BY site, date(start_time)
+        ORDER BY date(start_time), SUM(duration) DESC
+    ''', (start_date, end_date))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_website_usage_by_hour(date_str):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT strftime('%H', start_time) as hour, site, SUM(duration) FROM website_usage_logs
+        WHERE date(start_time) = ?
+        GROUP BY hour, site
+        ORDER BY hour, SUM(duration) DESC
+    ''', (date_str,))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_website_usage_by_day(start_date, end_date):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT date(start_time) as day, site, SUM(duration) FROM website_usage_logs
+        WHERE date(start_time) BETWEEN ? AND ?
+        GROUP BY day, site
+        ORDER BY day, SUM(duration) DESC
+    ''', (start_date, end_date))
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_website_usage_by_week(start_date, end_date):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute('''
+        SELECT strftime('%Y-%W', start_time) as week, site, SUM(duration) FROM website_usage_logs
+        WHERE date(start_time) BETWEEN ? AND ?
+        GROUP BY week, site
+        ORDER BY week, SUM(duration) DESC
+    ''', (start_date, end_date))
+    results = c.fetchall()
+    conn.close()
     return results 
