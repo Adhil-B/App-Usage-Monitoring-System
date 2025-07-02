@@ -2,7 +2,7 @@ import customtkinter as ctk
 from tkinter import messagebox, simpledialog
 from tracker import Tracker
 from notifier import show_alert
-from database import init_db, get_usage_today, set_limit, get_top_used_apps, get_latest_window_titles, get_website_usage_today
+from database import init_db, get_usage_today, set_limit, get_top_used_apps, get_latest_window_titles, get_website_usage_today, get_usage_by_day, get_usage_by_week, get_website_usage_by_day, get_website_usage_by_week, get_usage_by_hour, get_website_usage_by_hour
 from PIL import Image, ImageTk
 import os
 import sys
@@ -97,6 +97,14 @@ class AppUI:
         self.status_label = ctk.CTkLabel(header, text="Status: Stopped", font=("Segoe UI", 14), text_color="#aaa")
         self.status_label.pack(side="right", padx=16)
 
+        # Period selection
+        self.period_var = ctk.StringVar(value="Today")
+        period_frame = ctk.CTkFrame(header, fg_color="#23272e")
+        period_frame.pack(side="right", padx=16)
+        ctk.CTkLabel(period_frame, text="Period:", font=("Segoe UI", 12), text_color="#fff").pack(side="left", padx=(0, 4))
+        self.period_menu = ctk.CTkOptionMenu(period_frame, variable=self.period_var, values=["Today", "Last Week", "Last Month"], command=self.on_period_change)
+        self.period_menu.pack(side="left")
+
         # Main horizontal layout
         main = ctk.CTkFrame(self.root, fg_color="#23272e", corner_radius=16)
         main.pack(fill="both", expand=True, padx=24, pady=(0, 18))
@@ -190,15 +198,52 @@ class AppUI:
             return photo
         return None
 
+    def on_period_change(self, *args):
+        self.update_usage_table()
+        self.update_website_usage_table()
+        self.update_stats_charts()
+
+    def get_period_dates(self):
+        today = datetime.now().date()
+        if self.period_var.get() == "Today":
+            return today, today
+        elif self.period_var.get() == "Last Week":
+            start = today - timedelta(days=today.weekday())
+            end = start + timedelta(days=6)
+            return start, end
+        elif self.period_var.get() == "Last Month":
+            start = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+            end = today.replace(day=1) - timedelta(days=1)
+            return start, end
+        return today, today
+
     def update_usage_table(self, in_place=False):
-        usage = get_usage_today()
+        start, end = self.get_period_dates()
+        usage = []
+        if self.period_var.get() == "Today":
+            usage = get_usage_today()
+        elif self.period_var.get() == "Last Week":
+            usage = get_usage_by_day(str(start), str(end))
+        elif self.period_var.get() == "Last Month":
+            usage = get_usage_by_week(str(start), str(end))
         exe_map = self.tracker.get_app_exe_map()
         latest_titles = get_latest_window_titles()
         friendly_map = {}
         new_keys = set()
         if not hasattr(self, 'usage_rows'):
             self.usage_rows = {}
-        for idx, (app, minutes) in enumerate(usage):
+        # Aggregate usage by app for the period
+        app_totals = {}
+        if self.period_var.get() == "Today":
+            for app, minutes in usage:
+                app_totals[app] = app_totals.get(app, 0) + minutes
+        elif self.period_var.get() == "Last Week":
+            for day, app, minutes in usage:
+                app_totals[app] = app_totals.get(app, 0) + minutes
+        elif self.period_var.get() == "Last Month":
+            for week, app, minutes in usage:
+                app_totals[app] = app_totals.get(app, 0) + minutes
+        for idx, (app, minutes) in enumerate(sorted(app_totals.items(), key=lambda x: -x[1])):
             if app in IGNORE_APPS:
                 continue
             exe_path = exe_map.get(app)
@@ -239,11 +284,29 @@ class AppUI:
         self.friendly_map = friendly_map
 
     def update_website_usage_table(self):
-        usage = get_website_usage_today()
+        start, end = self.get_period_dates()
+        usage = []
+        if self.period_var.get() == "Today":
+            usage = get_website_usage_today()
+        elif self.period_var.get() == "Last Week":
+            usage = get_website_usage_by_day(str(start), str(end))
+        elif self.period_var.get() == "Last Month":
+            usage = get_website_usage_by_week(str(start), str(end))
         new_keys = set()
         if not hasattr(self, 'website_rows'):
             self.website_rows = {}
-        for idx, (site, minutes) in enumerate(usage):
+        # Aggregate usage by site for the period
+        site_totals = {}
+        if self.period_var.get() == "Today":
+            for site, minutes in usage:
+                site_totals[site] = site_totals.get(site, 0) + minutes
+        elif self.period_var.get() == "Last Week":
+            for day, site, minutes in usage:
+                site_totals[site] = site_totals.get(site, 0) + minutes
+        elif self.period_var.get() == "Last Month":
+            for week, site, minutes in usage:
+                site_totals[site] = site_totals.get(site, 0) + minutes
+        for idx, (site, minutes) in enumerate(sorted(site_totals.items(), key=lambda x: -x[1])):
             site_display = site.capitalize()
             new_keys.add(site_display)
             bg = "#23272e" if idx % 2 == 0 else "#181a20"
@@ -270,62 +333,162 @@ class AppUI:
                 del self.website_rows[key]
 
     def update_stats_charts(self, in_place=False):
-        # Modern stacked bar chart for weekly usage
+        from database import get_usage_by_hour, get_usage_by_day, get_usage_by_week, get_website_usage_by_hour, get_website_usage_by_day, get_website_usage_by_week
         today = datetime.now().date()
-        week_start = today - timedelta(days=today.weekday())
-        week_days = [(week_start + timedelta(days=i)) for i in range(7)]
-        day_labels = [calendar.day_abbr[d.weekday()][0] for d in week_days]
-        # Prepare data: {day: {category: minutes}}
-        day_data = {d: {"Distracting": 0, "Productive": 0, "Others": 0} for d in week_days}
-        # Example: classify apps/sites (customize as needed)
-        DISTRACTING = set(["youtube", "instagram", "facebook", "twitter", "reddit", "tiktok", "netflix", "discord", "pinterest", "tumblr", "twitch", "roblox", "prime video", "quora", "9gag", "bilibili", "vk", "weibo", "imgur", "kick", "onlyfans"])
-        PRODUCTIVE = set(["notion", "vscode", "pycharm", "word", "excel", "onenote", "outlook", "teams", "slack", "zoom", "google docs", "google sheets", "github desktop"])
-        # App usage
-        for app, minutes in get_usage_today():
-            app_lower = app.lower()
-            # For demo, treat all as today
-            day = today
-            if any(site in app_lower for site in DISTRACTING):
-                day_data[day]["Distracting"] += minutes
-            elif any(site in app_lower for site in PRODUCTIVE):
-                day_data[day]["Productive"] += minutes
-            else:
-                day_data[day]["Others"] += minutes
-        # Website usage
-        for site, minutes in get_website_usage_today():
-            site_lower = site.lower()
-            day = today
-            if any(site in site_lower for site in DISTRACTING):
-                day_data[day]["Distracting"] += minutes
-            elif any(site in site_lower for site in PRODUCTIVE):
-                day_data[day]["Productive"] += minutes
-            else:
-                day_data[day]["Others"] += minutes
-        # Draw chart
-        self.bar_canvas.delete("all")
-        bar_width = 18
-        gap = 12
-        x0 = 18
-        max_minutes = max(sum(day_data[d][cat] for cat in day_data[d]) for d in week_days) or 1
-        colors = {"Distracting": "#f59e42", "Productive": "#4ade80", "Others": "#9ca3af"}
-        for i, d in enumerate(week_days):
-            y = 130
-            for cat in ["Others", "Productive", "Distracting"]:
-                h = int(110 * day_data[d][cat] / max_minutes) if max_minutes > 0 else 0
-                if h > 0:
-                    self.bar_canvas.create_rectangle(x0 + i * (bar_width + gap), y - h, x0 + i * (bar_width + gap) + bar_width, y, fill=colors[cat], outline="", width=0)
-                    y -= h
-            # Day label
-            self.bar_canvas.create_text(x0 + i * (bar_width + gap) + bar_width // 2, 135, text=day_labels[i], fill="#aaa", font=("Segoe UI", 11, "bold"))
-        # Total usage
-        total_minutes = sum(sum(day_data[d][cat] for cat in day_data[d]) for d in week_days)
-        h = total_minutes // 60
-        m = int(total_minutes % 60)
-        self.usage_total_label.configure(text=f"{h}h {m}m")
-        self.usage_range_label.configure(text=f"{week_days[0].strftime('%d %b')} - {week_days[-1].strftime('%d %b')}")
+        start, end = self.get_period_dates()
+        period = self.period_var.get()
+        # Prepare data structure
+        if period == "Today":
+            # Hourly
+            app_hourly = get_usage_by_hour(str(today))
+            web_hourly = get_website_usage_by_hour(str(today))
+            hours = [f"{h:02d}" for h in range(24)]
+            hour_data = {h: {"Distracting": 0, "Productive": 0, "Others": 0} for h in hours}
+            DISTRACTING = set(["youtube", "instagram", "facebook", "twitter", "reddit", "tiktok", "netflix", "discord", "pinterest", "tumblr", "twitch", "roblox", "prime video", "quora", "9gag", "bilibili", "vk", "weibo", "imgur", "kick", "onlyfans"])
+            PRODUCTIVE = set(["notion", "vscode", "pycharm", "word", "excel", "onenote", "outlook", "teams", "slack", "zoom", "google docs", "google sheets", "github desktop"])
+            for hour, app, minutes in app_hourly:
+                cat = "Others"
+                app_lower = app.lower()
+                if any(site in app_lower for site in DISTRACTING):
+                    cat = "Distracting"
+                elif any(site in app_lower for site in PRODUCTIVE):
+                    cat = "Productive"
+                hour_data[hour][cat] += minutes
+            for hour, site, minutes in web_hourly:
+                cat = "Others"
+                site_lower = site.lower()
+                if any(s in site_lower for s in DISTRACTING):
+                    cat = "Distracting"
+                elif any(s in site_lower for s in PRODUCTIVE):
+                    cat = "Productive"
+                hour_data[hour][cat] += minutes
+            # Draw chart
+            self.bar_canvas.delete("all")
+            bar_width = 8
+            gap = 4
+            x0 = 18
+            max_minutes = max(sum(hour_data[h][cat] for cat in hour_data[h]) for h in hours) or 1
+            colors = {"Distracting": "#f59e42", "Productive": "#4ade80", "Others": "#9ca3af"}
+            for i, h in enumerate(hours):
+                y = 130
+                for cat in ["Others", "Productive", "Distracting"]:
+                    v = hour_data[h][cat]
+                    hh = int(110 * v / max_minutes) if max_minutes > 0 else 0
+                    if hh > 0:
+                        self.bar_canvas.create_rectangle(x0 + i * (bar_width + gap), y - hh, x0 + i * (bar_width + gap) + bar_width, y, fill=colors[cat], outline="", width=0)
+                        y -= hh
+                self.bar_canvas.create_text(x0 + i * (bar_width + gap) + bar_width // 2, 135, text=h, fill="#aaa", font=("Segoe UI", 8, "bold"))
+            total_minutes = sum(sum(hour_data[h][cat] for cat in hour_data[h]) for h in hours)
+            h = int(total_minutes // 60)
+            m = int(total_minutes % 60)
+            self.usage_total_label.configure(text=f"{h}h {m}m")
+            self.usage_range_label.configure(text=f"{today.strftime('%d %b %Y')}")
+        elif period == "Last Week":
+            # Daily
+            days = [(start + timedelta(days=i)) for i in range((end - start).days + 1)]
+            day_labels = [d.strftime('%a')[0] for d in days]
+            app_daily = get_usage_by_day(str(start), str(end))
+            web_daily = get_website_usage_by_day(str(start), str(end))
+            day_data = {str(d): {"Distracting": 0, "Productive": 0, "Others": 0} for d in days}
+            DISTRACTING = set(["youtube", "instagram", "facebook", "twitter", "reddit", "tiktok", "netflix", "discord", "pinterest", "tumblr", "twitch", "roblox", "prime video", "quora", "9gag", "bilibili", "vk", "weibo", "imgur", "kick", "onlyfans"])
+            PRODUCTIVE = set(["notion", "vscode", "pycharm", "word", "excel", "onenote", "outlook", "teams", "slack", "zoom", "google docs", "google sheets", "github desktop"])
+            for day, app, minutes in app_daily:
+                cat = "Others"
+                app_lower = app.lower()
+                if any(site in app_lower for site in DISTRACTING):
+                    cat = "Distracting"
+                elif any(site in app_lower for site in PRODUCTIVE):
+                    cat = "Productive"
+                day_data[day][cat] += minutes
+            for day, site, minutes in web_daily:
+                cat = "Others"
+                site_lower = site.lower()
+                if any(s in site_lower for s in DISTRACTING):
+                    cat = "Distracting"
+                elif any(s in site_lower for s in PRODUCTIVE):
+                    cat = "Productive"
+                day_data[day][cat] += minutes
+            self.bar_canvas.delete("all")
+            bar_width = 18
+            gap = 12
+            x0 = 18
+            max_minutes = max(sum(day_data[str(d)][cat] for cat in day_data[str(d)]) for d in days) or 1
+            colors = {"Distracting": "#f59e42", "Productive": "#4ade80", "Others": "#9ca3af"}
+            for i, d in enumerate(days):
+                y = 130
+                for cat in ["Others", "Productive", "Distracting"]:
+                    v = day_data[str(d)][cat]
+                    hh = int(110 * v / max_minutes) if max_minutes > 0 else 0
+                    if hh > 0:
+                        self.bar_canvas.create_rectangle(x0 + i * (bar_width + gap), y - hh, x0 + i * (bar_width + gap) + bar_width, y, fill=colors[cat], outline="", width=0)
+                        y -= hh
+                self.bar_canvas.create_text(x0 + i * (bar_width + gap) + bar_width // 2, 135, text=day_labels[i], fill="#aaa", font=("Segoe UI", 11, "bold"))
+            total_minutes = sum(sum(day_data[str(d)][cat] for cat in day_data[str(d)]) for d in days)
+            h = int(total_minutes // 60)
+            m = int(total_minutes % 60)
+            self.usage_total_label.configure(text=f"{h}h {m}m")
+            self.usage_range_label.configure(text=f"{days[0].strftime('%d %b')} - {days[-1].strftime('%d %b')}")
+        elif period == "Last Month":
+            # Weekly
+            # Find all week keys in the month using '%Y-%W' format
+            weeks = []
+            week_keys = []
+            d = start
+            while d <= end:
+                week_start = d - timedelta(days=d.weekday())
+                week_key = week_start.strftime('%Y-%W')
+                if week_key not in week_keys:
+                    week_keys.append(week_key)
+                    weeks.append(week_start)
+                d += timedelta(days=7)
+            week_labels = [f"W{ws.isocalendar()[1]}" for ws in weeks]
+            app_weekly = get_usage_by_week(str(start), str(end))
+            web_weekly = get_website_usage_by_week(str(start), str(end))
+            week_data = {wk: {"Distracting": 0, "Productive": 0, "Others": 0} for wk in week_keys}
+            DISTRACTING = set(["youtube", "instagram", "facebook", "twitter", "reddit", "tiktok", "netflix", "discord", "pinterest", "tumblr", "twitch", "roblox", "prime video", "quora", "9gag", "bilibili", "vk", "weibo", "imgur", "kick", "onlyfans"])
+            PRODUCTIVE = set(["notion", "vscode", "pycharm", "word", "excel", "onenote", "outlook", "teams", "slack", "zoom", "google docs", "google sheets", "github desktop"])
+            for week, app, minutes in app_weekly:
+                cat = "Others"
+                app_lower = app.lower()
+                if any(site in app_lower for site in DISTRACTING):
+                    cat = "Distracting"
+                elif any(site in app_lower for site in PRODUCTIVE):
+                    cat = "Productive"
+                if week in week_data:
+                    week_data[week][cat] += minutes
+            for week, site, minutes in web_weekly:
+                cat = "Others"
+                site_lower = site.lower()
+                if any(s in site_lower for s in DISTRACTING):
+                    cat = "Distracting"
+                elif any(s in site_lower for s in PRODUCTIVE):
+                    cat = "Productive"
+                if week in week_data:
+                    week_data[week][cat] += minutes
+            self.bar_canvas.delete("all")
+            bar_width = 28
+            gap = 16
+            x0 = 18
+            max_minutes = max(sum(week_data[wk][cat] for cat in week_data[wk]) for wk in week_keys) or 1
+            colors = {"Distracting": "#f59e42", "Productive": "#4ade80", "Others": "#9ca3af"}
+            for i, wk in enumerate(week_keys):
+                y = 130
+                for cat in ["Others", "Productive", "Distracting"]:
+                    v = week_data[wk][cat]
+                    hh = int(110 * v / max_minutes) if max_minutes > 0 else 0
+                    if hh > 0:
+                        self.bar_canvas.create_rectangle(x0 + i * (bar_width + gap), y - hh, x0 + i * (bar_width + gap) + bar_width, y, fill=colors[cat], outline="", width=0)
+                        y -= hh
+                self.bar_canvas.create_text(x0 + i * (bar_width + gap) + bar_width // 2, 135, text=week_labels[i], fill="#aaa", font=("Segoe UI", 11, "bold"))
+            total_minutes = sum(sum(week_data[wk][cat] for cat in week_data[wk]) for wk in week_keys)
+            h = int(total_minutes // 60)
+            m = int(total_minutes % 60)
+            self.usage_total_label.configure(text=f"{h}h {m}m")
+            self.usage_range_label.configure(text=f"{start.strftime('%d %b')} - {end.strftime('%d %b')}")
         # Legend
         for widget in self.bar_legend.winfo_children():
             widget.destroy()
+        colors = {"Distracting": "#f59e42", "Productive": "#4ade80", "Others": "#9ca3af"}
         for cat, color in colors.items():
             dot = ctk.CTkLabel(self.bar_legend, text="●", font=("Segoe UI", 13, "bold"), text_color=color)
             dot.pack(side="left", padx=(0, 4))
