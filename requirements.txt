@@ -3,4 +3,7 @@ psutil
 win10toast
 customtkinter
 pillow
-matplotlib 
+matplotlib
+flask
+pywebview
+pystray

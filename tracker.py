@@ -12,7 +12,6 @@ DISTRACTING_SITES = [
     'pinterest.com', 'pinterest', 'tumblr.com', 'tumblr', 'twitch.tv', 'twitch', 'roblox.com', 'roblox',
     'primevideo.com', 'prime video', 'linkedin.com', 'linkedin', 'quora.com', 'quora', '9gag.com', '9gag',
     'bilibili.com', 'bilibili', 'vk.com', 'vk', 'weibo.com', 'weibo', 'imgur.com', 'imgur', 'kick.com', 'kick',
-    'onlyfans.com', 'onlyfans',
 ]
 BROWSER_PROCESSES = ['chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'opera_gx.exe', 'vivaldi.exe']
 
