@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import calendar
 from datetime import datetime, timedelta
+from utils import get_friendly_app_name
 
 if sys.platform == "win32":
     import ctypes
@@ -44,34 +45,12 @@ else:
     def extract_icon_from_exe(exe_path, size=(32, 32)):
         return None
 
-def get_friendly_app_name(exe_path, fallback, window_title=None):
-    if exe_path and os.path.exists(exe_path):
-        try:
-            import win32api
-            info = win32api.GetFileVersionInfo(exe_path, '\\')
-            # Prefer FileDescription, then ProductName
-            if 'StringFileInfo' in info:
-                for k, v in info['StringFileInfo'].items():
-                    if k.lower() == 'filedescription' and v:
-                        return v
-                for k, v in info['StringFileInfo'].items():
-                    if k.lower() == 'productname' and v:
-                        return v
-            if 'FileDescription' in info and info['FileDescription']:
-                return info['FileDescription']
-        except Exception:
-            pass
-    # If window title contains ' - ', use the part after the last ' - '
-    if window_title and window_title.strip() and window_title.strip().lower() not in ["", "program manager", "start menu"]:
-        title = window_title.strip()
-        if ' - ' in title:
-            return title.split(' - ')[-1].strip()
-        return title
-    return fallback
-
 IGNORE_APPS = {
     'explorer.exe', 'Search', 'System', 'Start Menu', 'program manager', 'ShellExperienceHost.exe', 'StartMenuExperienceHost.exe', 'RuntimeBroker.exe', 'SearchUI.exe', 'backgroundTaskHost.exe', 'ctfmon.exe', 'dwm.exe', 'sihost.exe', 'taskhostw.exe', 'TextInputHost.exe', 'LockApp.exe', 'ApplicationFrameHost.exe', 'WindowsInternal.ComposableShell.Experiences.TextInput.InputApp.exe', 'WindowsShellExperienceHost.exe', 'SearchApp.exe', 'StartMenuExperienceHost', 'Widgets.exe', 'WidgetService.exe', 'YourPhone.exe', 'SystemSettings.exe', 'msedgewebview2.exe', 'SecurityHealthSystray.exe', 'SecurityHealthService.exe', 'smartscreen.exe', 'SearchHost.exe', 'SearchFilterHost.exe', 'SearchProtocolHost.exe', 'SearchIndexer.exe', 'Idle', 'Idle.exe', 'DesktopWindowXamlSource', 'backgroundTaskHost', 'SearchApp', 'Widgets', 'WidgetService', 'YourPhone', 'SystemSettings', 'msedgewebview2', 'SecurityHealthSystray', 'SecurityHealthService', 'smartscreen', 'SearchHost', 'SearchFilterHost', 'SearchProtocolHost', 'SearchIndexer', 'Idle', 'Idle.exe', 'DesktopWindowXamlSource',
 }
+
+# Normalize IGNORE_APPS for robust comparison
+NORMALIZED_IGNORE_APPS = set(x.lower().replace('.exe', '') for x in IGNORE_APPS)
 
 class AppUI:
     def __init__(self, root):
@@ -180,7 +159,9 @@ class AppUI:
         try:
             limit = simpledialog.askinteger("Set Limit", f"Max minutes per day for {app_name}:")
             if limit:
-                set_limit(app_name, limit)
+                # Normalize app_name for limit storage
+                norm_app_name = app_name.lower().replace('.exe', '')
+                set_limit(norm_app_name, limit)
                 messagebox.showinfo("Limit Set", f"Limit set for {app_name}: {limit} min/day")
         except Exception:
             messagebox.showerror("Error", "Invalid input.")
@@ -244,12 +225,12 @@ class AppUI:
             for week, app, minutes in usage:
                 app_totals[app] = app_totals.get(app, 0) + minutes
         for idx, (app, minutes) in enumerate(sorted(app_totals.items(), key=lambda x: -x[1])):
-            if app in IGNORE_APPS:
-                continue
+            app_norm = app.lower().replace('.exe', '')
             exe_path = exe_map.get(app)
             window_title = latest_titles.get(app)
             friendly_name = get_friendly_app_name(exe_path, app, window_title)
-            if friendly_name in IGNORE_APPS:
+            friendly_norm = friendly_name.lower().replace('.exe', '')
+            if app_norm in NORMALIZED_IGNORE_APPS or friendly_norm in NORMALIZED_IGNORE_APPS:
                 continue
             friendly_map[app] = friendly_name
             new_keys.add(friendly_name)
@@ -269,7 +250,7 @@ class AppUI:
                 name_label.pack(side="left", padx=8)
                 mins_label = ctk.CTkLabel(row, text=f"{minutes:.1f} min", font=("Segoe UI", 11), text_color="#aaa")
                 mins_label.pack(side="right", padx=8)
-                # Add per-app limit button (hourglass icon)
+                # Only show per-app limit button if not a system process
                 limit_btn = ctk.CTkButton(row, text="", width=28, height=28, font=("Segoe UI", 14), fg_color="#a21caf", hover_color="#7c1fa2", command=lambda app=app: self.set_limit_dialog(app))
                 limit_btn.configure(text="⏳")
                 limit_btn.pack(side="right", padx=4)

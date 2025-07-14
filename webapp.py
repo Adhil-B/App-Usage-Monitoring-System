@@ -14,9 +14,10 @@ from database import get_usage_today, get_usage_by_day as get_usage_by_day_flat,
 from database import get_latest_window_titles
 # Assume you have a Tracker class or similar
 from tracker import Tracker
+from notifier import show_alert
 
 app = Flask(__name__)
-tracker = Tracker()
+tracker = Tracker(alert_callback=show_alert)
 tracking_state = {'running': False}
 
 SYSTEM_PROCESSES = set([
@@ -41,6 +42,23 @@ def stop_tracking():
     tracker.stop()
     tracking_state['running'] = False
     return jsonify({'success': True})
+
+@app.route('/api/current_app')
+def current_app():
+    """Get current active app info for live updates"""
+    if not tracker.is_running():
+        return jsonify({'active': False, 'app': None, 'title': None, 'duration': 0})
+    
+    if tracker.current_app and tracker.start_time:
+        now = datetime.now()
+        duration = (now - tracker.start_time).total_seconds() / 60.0
+        return jsonify({
+            'active': True,
+            'app': tracker.current_app,
+            'title': tracker.current_title,
+            'duration': round(duration, 1)
+        })
+    return jsonify({'active': False, 'app': None, 'title': None, 'duration': 0})
 
 @app.route('/api/usage_data')
 def usage_data():
@@ -435,7 +453,7 @@ def index():
             .widgets-grid {
                 display: grid;
                 grid-template-columns: 1fr;
-                grid-template-rows: repeat(4, auto);
+                grid-template-rows: repeat(5, auto);
                 gap: 12px;
             }
             .widget-card {
@@ -550,7 +568,6 @@ def index():
                 <nav class="sidebar-nav">
                     <a href="#" class="sidebar-link active" id="dashboard-link">Dashboard</a>
                     <a href="#" class="sidebar-link" id="app-limits-link">App Limits</a>
-                    <a href="#" class="sidebar-link">Settings</a>
                 </nav>
                 <div class="sidebar-footer">v1.0</div>
             </aside>
@@ -598,16 +615,12 @@ def index():
                         </div>
                     </div>
                     <div class="widget-card">
-                        <div class="widget-title">Top Productive Apps</div>
-                        <ol class="widget-list" id="top-productive"></ol>
-                    </div>
-                    <div class="widget-card">
-                        <div class="widget-title">Top Distracting Apps</div>
-                        <ol class="widget-list" id="top-distracting"></ol>
-                    </div>
-                    <div class="widget-card">
                         <div class="widget-title">Top Websites</div>
                         <ol class="widget-list" id="top-websites"></ol>
+                    </div>
+                    <div class="widget-card">
+                        <div class="widget-title">Top Apps</div>
+                        <ol class="widget-list" id="top-apps"></ol>
                     </div>
                 </div>
             </aside>
@@ -632,13 +645,13 @@ def index():
             const m = Math.round(mins % 60);
             return h > 0 ? `${h}h ${m}m` : `${m}m`;
         }
-        function updateWidgets(summary) {
-            const prod = summary.top_productive.map(([app, mins]) => `<li>${app} <span style='color:#6366f1'>${formatMinutes(mins)}</span></li>`).join('');
-            document.getElementById('top-productive').innerHTML = prod || '<li style="color:#aaa">None</li>';
-            const dist = summary.top_distracting.map(([app, mins]) => `<li>${app} <span style='color:#f59e42'>${formatMinutes(mins)}</span></li>`).join('');
-            document.getElementById('top-distracting').innerHTML = dist || '<li style="color:#aaa">None</li>';
+        function updateWidgets(summary, analytics) {
             const webs = summary.top_websites.map(([site, mins]) => `<li>${site} <span style='color:#38bdf8'>${formatMinutes(mins)}</span></li>`).join('');
             document.getElementById('top-websites').innerHTML = webs || '<li style="color:#aaa">None</li>';
+            // Show top 3 apps overall, exclude websites ('.com' in name)
+            const topApps = analytics.filter(a => !a.name.toLowerCase().includes('.com')).slice(0, 3);
+            const appList = topApps.map(a => `<li>${a.name} <span style='color:${a.category === 'Productive' ? '#6366f1' : (a.category === 'Distracting' ? '#f59e42' : '#9ca3af')}'>${formatMinutes(a.minutes)}</span></li>`).join('');
+            document.getElementById('top-apps').innerHTML = appList || '<li style="color:#aaa">None</li>';
         }
         function updateAnalytics(analytics) {
             const max = Math.max(...analytics.map(a => a.minutes), 1);
@@ -652,7 +665,7 @@ def index():
         }
         async function renderChart(period) {
             const data = await fetchUsageData(period);
-            updateWidgets(data.summary);
+            updateWidgets(data.summary, data.analytics);
             updateAnalytics(data.analytics);
             const ctx = document.getElementById('usageChart').getContext('2d');
             if (chart) chart.destroy();
@@ -826,7 +839,7 @@ def index():
                 row.style.padding = '10px 16px';
                 row.style.boxShadow = '0 1px 6px #0001';
                 row.innerHTML = `
-                    <span style="flex:1;font-weight:500;">${app.app_name}</span>
+                    <span style="flex:1;font-weight:500;">${app.display_title}</span>
                     <input type="number" min="1" max="1440" value="${app.limit_minutes ?? ''}" placeholder="Limit (min)" style="width:90px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:1rem;">
                     <button class="track-btn" style="width:auto;min-width:80px;" >Set Limit</button>
                 `;
@@ -853,6 +866,66 @@ def index():
                 list.appendChild(row);
             });
         }
+        
+        // --- Live Updates ---
+        async function updateCurrentApp() {
+            try {
+                const res = await fetch('/api/current_app');
+                const data = await res.json();
+                
+                if (data.active) {
+                    document.getElementById('current-app-name').textContent = data.app;
+                    document.getElementById('current-app-duration').textContent = `${data.duration} min`;
+                } else {
+                    document.getElementById('current-app-name').textContent = '--';
+                    document.getElementById('current-app-duration').textContent = '--';
+                }
+            } catch (error) {
+                console.error('Error updating current app:', error);
+            }
+        }
+        
+        // Auto-refresh functionality
+        let refreshInterval;
+        
+        function startAutoRefresh() {
+            // Update current app every second
+            updateCurrentApp();
+            setInterval(updateCurrentApp, 1000);
+            
+            // Update charts and data every 30 seconds when tracking
+            refreshInterval = setInterval(async () => {
+                const trackingState = await fetch('/api/tracking_state').then(r => r.json());
+                if (trackingState.running) {
+                    const currentPeriod = document.getElementById('period').value;
+                    renderChart(currentPeriod);
+                    renderDoughnut(currentPeriod);
+                }
+            }, 30000); // 30 seconds
+        }
+        
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+        
+        // Start auto-refresh when page loads
+        startAutoRefresh();
+        
+        // Update tracking buttons and start auto-refresh when tracking starts
+        document.getElementById('start-btn').onclick = async function() {
+            await fetch('/api/start_tracking', {method: 'POST'});
+            updateTrackingButtons();
+            startAutoRefresh();
+        };
+        
+        document.getElementById('stop-btn').onclick = async function() {
+            await fetch('/api/stop_tracking', {method: 'POST'});
+            updateTrackingButtons();
+            stopAutoRefresh();
+        };
         </script>
     </body>
     </html>
@@ -895,10 +968,10 @@ def run_flask():
 @app.route('/api/app_limits')
 def app_limits():
     # Get all used apps (from usage logs) and their limits
-    conn = sqlite3.connect('usage.db')
+    conn = sqlite3.connect('app_usage.db')
     c = conn.cursor()
     # Ensure usage_logs table exists
-    c.execute('CREATE TABLE IF NOT EXISTS usage_logs (app_name TEXT, start_time TEXT, duration INTEGER)')
+    c.execute('CREATE TABLE IF NOT EXISTS usage_logs (app_name TEXT, title TEXT, start_time TEXT, end_time TEXT, duration REAL)')
     # Get all used apps
     c.execute('SELECT DISTINCT app_name FROM usage_logs')
     apps = [row[0] for row in c.fetchall()]
@@ -907,11 +980,50 @@ def app_limits():
     c.execute('SELECT app_name, limit_minutes FROM app_limits')
     limits = {row[0]: row[1] for row in c.fetchall()}
     conn.close()
+    # Friendly name mapping for browsers and common apps
+    BROWSER_MAP = {
+        'chrome.exe': 'Chrome',
+        'msedge.exe': 'Edge',
+        'firefox.exe': 'Firefox',
+        'brave.exe': 'Brave',
+        'opera.exe': 'Opera',
+        'opera_gx.exe': 'Opera GX',
+        'vivaldi.exe': 'Vivaldi',
+        'safari.exe': 'Safari',
+    }
+    COMMON_MAP = {
+        'code.exe': 'VSCode',
+        'pycharm64.exe': 'PyCharm',
+        'word.exe': 'Word',
+        'excel.exe': 'Excel',
+        'powerpnt.exe': 'PowerPoint',
+        'onenote.exe': 'OneNote',
+        'outlook.exe': 'Outlook',
+        'notepad.exe': 'Notepad',
+        'notepad++.exe': 'Notepad++',
+        'obsidian.exe': 'Obsidian',
+        'teams.exe': 'Teams',
+        'slack.exe': 'Slack',
+        'discord.exe': 'Discord',
+        'spotify.exe': 'Spotify',
+        'zoom.exe': 'Zoom',
+    }
+    def get_friendly_name(app):
+        app_l = app.lower()
+        if app_l in BROWSER_MAP:
+            return BROWSER_MAP[app_l]
+        if app_l in COMMON_MAP:
+            return COMMON_MAP[app_l]
+        if app_l.endswith('.exe'):
+            return app_l.replace('.exe', '').capitalize()
+        return app.capitalize()
     # Compose result
     result = []
     for app in sorted(apps, key=lambda x: x.lower()):
+        friendly_name = get_friendly_name(app)
         result.append({
             'app_name': app,
+            'display_title': friendly_name,
             'limit_minutes': limits.get(app)
         })
     return jsonify({'apps': result})
@@ -923,7 +1035,7 @@ def set_app_limit():
     limit_minutes = data.get('limit_minutes')
     if not app_name or limit_minutes is None:
         return jsonify({'success': False, 'error': 'Missing app_name or limit_minutes'}), 400
-    conn = sqlite3.connect('usage.db')
+    conn = sqlite3.connect('app_usage.db')
     c = conn.cursor()
     c.execute('CREATE TABLE IF NOT EXISTS app_limits (app_name TEXT PRIMARY KEY, limit_minutes INTEGER)')
     c.execute('INSERT OR REPLACE INTO app_limits (app_name, limit_minutes) VALUES (?, ?)', (app_name, limit_minutes))

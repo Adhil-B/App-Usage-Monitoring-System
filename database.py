@@ -50,19 +50,23 @@ def insert_usage_log(app_name, title, start_time, end_time, duration):
     conn.close()
 
 def set_limit(app_name, max_minutes):
+    # Normalize app_name for storage
+    norm_app_name = app_name.lower().replace('.exe', '')
     conn = get_connection()
     c = conn.cursor()
     c.execute('''
         INSERT INTO limits (app_name, max_minutes) VALUES (?, ?)
         ON CONFLICT(app_name) DO UPDATE SET max_minutes=excluded.max_minutes
-    ''', (app_name, max_minutes))
+    ''', (norm_app_name, max_minutes))
     conn.commit()
     conn.close()
 
 def get_limit(app_name):
+    # Normalize app_name for lookup
+    norm_app_name = app_name.lower().replace('.exe', '')
     conn = get_connection()
     c = conn.cursor()
-    c.execute('SELECT max_minutes FROM limits WHERE app_name=?', (app_name,))
+    c.execute('SELECT max_minutes FROM limits WHERE app_name=?', (norm_app_name,))
     row = c.fetchone()
     conn.close()
     return row[0] if row else None
